@@ -29,6 +29,9 @@
 #include <taihen.h>
 
 // Constants
+#define MOUNT_POINT_IMC0_ID 0xD00
+#define MOUNT_POINT_IMC0_NAME "imc0:"
+#define MOUNT_POINT_IMC0_NAME_2 "exfatimc0"
 #define MOUNT_POINT_UX0_ID  0x800
 #define MOUNT_POINT_UX0_NAME "ux0:"
 #define MOUNT_POINT_UX0_NAME_2 "exfatux0"
@@ -39,10 +42,12 @@
 #define BLOCK_DEVICE_XMC "sdstor0:xmc-lp-ign-userext"
 #define BLOCK_DEVICE_UMA "sdstor0:uma-pp-act-a"
 #define BLOCK_DEVICE_UMA_2 "sdstor0:uma-lp-act-entire"
+#define BLOCK_DEVICE_GCD "sdstor0:gcd-lp-ign-entire"
 
 #define SWAP_BUTTON SCE_CTRL_SQUARE
 
-const char check_patch[] = { 0x01, 0x20, 0x01, 0x20 };
+const char checkPatch[] = { 0x01, 0x20, 0x01, 0x20 };
+const char zeroCallOnePatch[4] = {0x01, 0x20, 0x00, 0xBF};
 
 // External functions
 int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
@@ -77,6 +82,7 @@ typedef struct {
 static SceIoDevice usbToUx0Device  = { MOUNT_POINT_UX0_NAME,  MOUNT_POINT_UX0_NAME_2,  BLOCK_DEVICE_UMA, BLOCK_DEVICE_UMA_2, MOUNT_POINT_UX0_ID  };
 static SceIoDevice usbToUma0Device = { MOUNT_POINT_UMA0_NAME, MOUNT_POINT_UMA0_NAME_2, BLOCK_DEVICE_UMA, BLOCK_DEVICE_UMA_2, MOUNT_POINT_UMA0_ID };
 static SceIoDevice xmcToUma0Device = { MOUNT_POINT_UMA0_NAME, MOUNT_POINT_UMA0_NAME_2, BLOCK_DEVICE_XMC, BLOCK_DEVICE_XMC,   MOUNT_POINT_UMA0_ID };
+static SceIoDevice gcdToImc0Device = { MOUNT_POINT_IMC0_NAME, MOUNT_POINT_IMC0_NAME_2, BLOCK_DEVICE_GCD, BLOCK_DEVICE_GCD,   MOUNT_POINT_IMC0_ID };
 
 // External functions (not loaded yet)
 static SceIoMountPoint *(*sceIoFindMountPoint)(int id) = NULL;
@@ -145,11 +151,11 @@ SceUID loadSceUsbMassModule() {
 
 int loadAndStartSceUsbMassModule() {
   SceUID sceUsbMassModuleId = loadSceUsbMassModule();
-  
+
   // Hook module_start
   // FIXME: add support to taiHEN so we don't need to hard code this address
-  SceUID taiPatchReference1546 = taiInjectDataForKernel(KERNEL_PID, sceUsbMassModuleId, 0, 0x1546, check_patch, sizeof(check_patch));
-  SceUID taiPatchReference154c = taiInjectDataForKernel(KERNEL_PID, sceUsbMassModuleId, 0, 0x154c, check_patch, sizeof(check_patch));
+  SceUID taiPatchReference1546 = taiInjectDataForKernel(KERNEL_PID, sceUsbMassModuleId, 0, 0x1546, checkPatch, sizeof(checkPatch));
+  SceUID taiPatchReference154c = taiInjectDataForKernel(KERNEL_PID, sceUsbMassModuleId, 0, 0x154c, checkPatch, sizeof(checkPatch));
 
   int status;
   if (sceUsbMassModuleId >= 0)
@@ -165,13 +171,60 @@ int loadAndStartSceUsbMassModule() {
   return status;
 }
 
-int isSwapKeyPressed() {
+// Allow microSD cards (Patch by motoharu)
+int patchSdstor() {
+  tai_module_info_t info;
+  info.size = sizeof(tai_module_info_t);
+  if (taiGetModuleInfoForKernel(KERNEL_PID, "SceSdstor", &info) < 0)
+    return -1;
+
+  // Patch for proc_initialize_generic_2 - So that sd card type is not ignored
+  taiInjectDataForKernel(KERNEL_PID, info.modid, 0, 0x2498, zeroCallOnePatch, sizeof(zeroCallOnePatch)); // Patch (BLX) to (MOVS R0, #1 ; NOP)
+
+  return 0;
+}
+
+int pokeGamecard() {
+  tai_module_info_t info;
+  info.size = sizeof(tai_module_info_t);
+  if (taiGetModuleInfoForKernel(KERNEL_PID, "SceSdstor", &info) < 0)
+    return -1;
+
+  void *args = 0;
+  int (*int_insert)() = 0;
+  int (*int_remove)() = 0;
+
+  module_get_offset(KERNEL_PID, info.modid, 0, 0x3BD5, (uintptr_t *)&int_insert);
+  module_get_offset(KERNEL_PID, info.modid, 0, 0x3BC9, (uintptr_t *)&int_remove);
+
+  module_get_offset(KERNEL_PID, info.modid, 1, 0x1B20 + 40 * 1, (uintptr_t *)&args);
+
+  int_remove(0, args);
+  ksceKernelDelayThread(500 * 1000);
+  int_insert(0, args);
+  ksceKernelDelayThread(500 * 1000);
+
+  return 0;
+}
+
+void suspendCallback(int resume, int eventid, void *args, void *opt) {
+  if (eventid != 0x100000)
+    return;
+
+  pokeGamecard();
+}
+
+void registerSuspendCallback() {
+  ksceKernelRegisterSuspendCallback("gamesd", suspendCallback, NULL);
+}
+
+int isKeyPressed(int key) {
   ksceCtrlSetSamplingMode(SCE_CTRL_MODE_DIGITAL);
   
   SceCtrlData ctrl;
   ksceCtrlPeekBufferPositive(0, &ctrl, 1);
 
-  return ctrl.buttons & SWAP_BUTTON;
+  return ctrl.buttons & key;
 }
 
 int isUsbDeviceAvailable() {
@@ -189,6 +242,9 @@ int isUsbDeviceAvailable() {
 // Main module function
 void _start() __attribute__((weak, alias("module_start")));
 int module_start(SceSize args, void *argp) {
+  if (isKeyPressed(SCE_CTRL_CROSS))
+    return SCE_KERNEL_START_SUCCESS;
+  
   int importStatus = importFindMountPointFunction();
   if (importStatus < 0)
     return SCE_KERNEL_START_NO_RESIDENT;
@@ -200,16 +256,26 @@ int module_start(SceSize args, void *argp) {
   // Fake safe mode in SceUsbServ
   safeModeHookId = taiHookFunctionImportForKernel(KERNEL_PID, &ksceSysrootIsSafeModeRef, "SceUsbServ", 0x2ED7F97A, 0x834439A7, ksceSysrootIsSafeModePatched);
 
+  patchSdstor();
+  pokeGamecard();
+  registerSuspendCallback();
+
   if (isUsbDeviceAvailable()) {
-    if (isSwapKeyPressed()) {
+    if (isKeyPressed(SWAP_BUTTON)) {
       // Mount USB device at uma0
       shellKernelRedirect(&usbToUma0Device);
+
+      // Mount GCD device at imc0
+      shellKernelRedirect(&gcdToImc0Device);
     } else {
       // Mount USB device at ux0
       shellKernelRedirect(&usbToUx0Device);
   
       // Mount XMC device at uma0
       shellKernelRedirect(&xmcToUma0Device);
+
+      // Mount GCD device at imc0
+      shellKernelRedirect(&gcdToImc0Device);
     }
   }
 
