@@ -45,6 +45,7 @@
 const char check_patch[] = { 0x01, 0x20, 0x01, 0x20 };
 
 // External functions
+int module_get_export_func(SceUID pid, const char *modname, uint32_t libnid, uint32_t funcnid, uintptr_t *func);
 int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
 
 // Structs
@@ -127,18 +128,50 @@ int importFindMountPointFunction() {
     return -1;
 
   // Get important function
-  module_get_offset(KERNEL_PID, info.modid, 0, 0x138C1, (uintptr_t *)&sceIoFindMountPoint);
+  switch (info.module_nid) {
+    case 0x9642948C: // 3.60 retail
+      module_get_offset(KERNEL_PID, info.modid, 0, 0x138C1, (uintptr_t *)&sceIoFindMountPoint);
+      break;
+    
+    case 0xA96ACE9D: // 3.65 retail
+    case 0x3347A95F: // 3.67 retail
+      module_get_offset(KERNEL_PID, info.modid, 0, 0x182F5, (uintptr_t *)&sceIoFindMountPoint);
+      break;
+    
+    default:
+      return 0;
+  }
 
   return 0;
 }
 
 SceUID loadSceUsbMassModule() {
+  int (* _ksceKernelMountBootfs)(const char *bootImagePath);
+  int (* _ksceKernelUmountBootfs)(void);
+  int ret;
+
+  ret = module_get_export_func(KERNEL_PID, "SceKernelModulemgr", 0xC445FA63, 0x01360661, (uintptr_t *)&_ksceKernelMountBootfs);
+  if (ret < 0)
+    ret = module_get_export_func(KERNEL_PID, "SceKernelModulemgr", 0x92C9FFC2, 0x185FF1BC, (uintptr_t *)&_ksceKernelMountBootfs);
+  if (ret < 0)
+    return SCE_KERNEL_START_NO_RESIDENT;
+
+  ret = module_get_export_func(KERNEL_PID, "SceKernelModulemgr", 0xC445FA63, 0x9C838A6B, (uintptr_t *)&_ksceKernelUmountBootfs);
+  if (ret < 0)
+    ret = module_get_export_func(KERNEL_PID, "SceKernelModulemgr", 0x92C9FFC2, 0xBD61AD4D, (uintptr_t *)&_ksceKernelUmountBootfs);
+  if (ret < 0)
+    return SCE_KERNEL_START_NO_RESIDENT;
+
   SceUID moduleId;
-  if (ksceKernelMountBootfs("os0:kd/bootimage.skprx") >= 0) { // Try loading from bootimage
+
+  // First Try loading bootimage
+  if (_ksceKernelMountBootfs("os0:kd/bootimage.skprx") >= 0) {
     moduleId = ksceKernelLoadModule("os0:kd/umass.skprx", 0x800, NULL);
-    ksceKernelUmountBootfs();
-  } else // Try loading from VitaShell
+    _ksceKernelUmountBootfs();
+  } else {
+    // try loading from VitaShell
     moduleId = ksceKernelLoadModule("ux0:VitaShell/module/umass.skprx", 0, NULL);
+  }
 
   return moduleId;
 }
