@@ -17,7 +17,7 @@ installed to USB.
 
 ## Installation
 
-1. Download the [latest pre-built release](https://github.com/M1lk4h0l1c/usbmc/releases/latest) (`usbmc_installer.vpk`) or compile the 
+1. Download the [latest pre-built release](https://github.com/IDBurner/usbmc/releases/latest) (`usbmc_installer.vpk`) or compile the 
 source yourself.
 1. Make sure your USB storage drive is formatted to a single FAT, FAT32, or 
 exFAT partition using the MBR partition scheme.
@@ -40,7 +40,7 @@ already on there.
 
 ## Installation (if you already installed the original `usbmc` by Yifan Lu)
 
-1. Download the [latest pre-built release](https://github.com/M1lk4h0l1c/usbmc/releases/latest) (`usbmc.skprx`) or compile the 
+1. Download the [latest pre-built release](https://github.com/IDBurner/usbmc/releases/latest) (`usbmc.skprx`) or compile the 
 source yourself.
 1. Replace the original `usbmc.skprx` located at `ur0:tai`.
 1. Reboot
